@@ -310,6 +310,28 @@ void FakeClient::send(ptr<req_msg>& req,
     pendingReqs.push_back( FakeNetwork::ReqPkg(req, when_done) );
 }
 
+void FakeClient::send_with_write_callback(ptr<req_msg>& req,
+                      rpc_handler& when_done,
+                      rpc_handler& write_done,
+                      uint64_t /*send_timeout_ms*/)
+{
+    SimpleLogger* ll = motherNet->getBase()->getLogger();
+    _log_info(ll, "got request %s -> %s, %s",
+              motherNet->getEndpoint().c_str(),
+              dstNet->getEndpoint().c_str(),
+              msg_type_to_string( req->get_type() ).c_str() );
+    ptr<resp_msg> rsp;
+    ptr<rpc_exception> except;
+    write_done(rsp, except);
+    pendingReqs.push_back( FakeNetwork::ReqPkg(req, when_done) );
+}
+
+void FakeClient::async_read_response( ptr<req_msg>& req, 
+                              rpc_handler& when_done ) 
+{
+    return;
+}
+
 void FakeClient::dropPackets() {
     pendingReqs.clear();
     pendingResps.clear();

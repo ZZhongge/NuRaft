@@ -944,6 +944,7 @@ protected:
     void handle_ext_resp(ptr<resp_msg>& resp, ptr<rpc_exception>& err);
     void handle_ext_resp_err(rpc_exception& err);
     void handle_join_leave_rpc_err(msg_type t_msg, ptr<peer> p);
+    void handle_append_log_write_done(ptr<peer> p, ptr<resp_msg>& resp, ptr<rpc_exception>& err);
     void reset_srv_to_join();
     void reset_srv_to_leave();
     ptr<req_msg> create_append_entries_req(ptr<peer>& pp);
