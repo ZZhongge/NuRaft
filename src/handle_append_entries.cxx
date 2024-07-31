@@ -285,10 +285,11 @@ bool raft_server::request_append_entries(ptr<peer> p) {
         // If reserved message exists, process it first.
         ptr<req_msg> msg = p->get_rsv_msg();
         rpc_handler m_handler = p->get_rsv_msg_handler();
+        bool use_rsv = false;
         if (msg) {
             // Clear the reserved message. todo: we can't clear reserved message before we actually send it 
             // (for streaming mode, we need to wait flying request finish)
-            p->set_rsv_msg(nullptr, nullptr);
+            use_rsv = true;
             p_in("found reserved message to peer %d, type %d",
                  p->get_id(), msg->get_type());
 
@@ -360,6 +361,10 @@ bool raft_server::request_append_entries(ptr<peer> p) {
             // it is not an append entry request, disable stream here, and let flying request finish
             if (make_busy_success) {
                 // there is no flying request, send this request, clear reserved msg here
+                if (use_rsv) {
+                    p->set_rsv_msg(nullptr, nullptr);
+                }
+
                 p->disable_streaming();
                 p->append_done();
                 p->write_done();
