@@ -1,0 +1,20 @@
+need more investigate
+
+1. other request
+    1. install_snapshot_request
+        complicated one
+        currently we disable stream and let flying request finish
+    2. custom_notification_request
+        it is just a reminder, we disable stream and let flying request finish
+3. how to deal with error
+    1. socket and resp error
+        reset socket and reset rpc and reset stream
+    2. resp not accepted
+        just disable stream, and let flying request finish
+    3. stale rpc for sent
+        for sent() callback, does it need to be protected by rpc protector to avoid to add read callback after rpc is reseted
+4. flag
+    1. append_log_flag
+    2. allowed_append_log_flag
+    3. write_flag
+    4. streaming_mode_flag

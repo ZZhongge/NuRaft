@@ -30,8 +30,27 @@ limitations under the License.
 #include "srv_config.hxx"
 
 #include <atomic>
+#include <list>
 
 namespace nuraft {
+
+struct PeerReqPkg {
+    PeerReqPkg(ptr<req_msg>& _req, rpc_handler& _when_done)
+        : req(_req), when_done(_when_done)
+        {}
+public:
+    ptr<req_msg> get_req() {
+        return req;
+    }
+
+    rpc_handler& get_when_done() {
+        return when_done;
+    }
+
+private:
+    ptr<req_msg> req;
+    rpc_handler when_done;
+};
 
 class snapshot;
 class peer {
@@ -48,6 +67,10 @@ public:
         , rpc_backoff_( ctx.get_params()->rpc_failure_backoff_ )
         , max_hb_interval_( ctx.get_params()->max_hb_interval() )
         , next_log_idx_(0)
+        , last_streamed_log_idx_(0)
+        , streaming_mode_flag_(false)
+        , appending_log_flag_(false)
+        , writing_flag_(false)
         , last_accepted_log_idx_(0)
         , next_batch_size_hint_in_bytes_(0)
         , matched_idx_(0)
@@ -130,6 +153,60 @@ public:
 
     void set_free() {
         busy_flag_.store(false);
+    }
+
+    bool start_writing() {
+        bool f = false;
+        return writing_flag_.compare_exchange_strong(f, true);
+    }
+
+    bool is_writing() {
+        return writing_flag_;
+    }
+
+    void write_done() {
+        writing_flag_.store(false);
+    }
+
+    void enable_streaming() {
+        streaming_mode_flag_.store(true);
+    }
+
+    void disable_streaming() {
+        streaming_mode_flag_.store(false);
+    }
+
+    bool is_streaming() {
+        return streaming_mode_flag_ && appending_log_flag_ && allowed_appending_log_flag_;
+    }
+
+    void start_append() {
+        appending_log_flag_.store(true);
+    }
+
+    void append_done() {
+        appending_log_flag_.store(false);
+    }
+
+    bool is_appending() {
+        return appending_log_flag_.load();
+    }
+
+    void enable_append() {
+        allowed_appending_log_flag_.store(true);
+    }
+
+    void disable_append() {
+        allowed_appending_log_flag_.store(false);
+    }
+
+    bool is_allowed_appending() {
+        return allowed_appending_log_flag_.load();
+    }
+
+    bool try_disable_append() {
+        bool f = true;
+        return writing_flag_.compare_exchange_strong(f, false);
     }
 
     bool is_hb_enabled() const {
@@ -219,6 +296,10 @@ public:
                   ptr<req_msg>& req,
                   rpc_handler& handler);
 
+    void send_req_with_write_callback(ptr<peer> myself,
+                ptr<req_msg>& req,
+                rpc_handler& handler, rpc_handler& write_handler);
+
     void shutdown();
 
     // Time that sent the last request.
@@ -254,6 +335,9 @@ public:
 
     void set_last_sent_idx(ulong to)    { last_sent_idx_ = to; }
     ulong get_last_sent_idx() const     { return last_sent_idx_.load(); }
+
+    void set_last_streamed_log_idx(ulong to)    { last_streamed_log_idx_ = to; }
+    ulong get_last_streamed_log_idx() const     { return last_streamed_log_idx_.load(); }
 
     void reset_cnt_not_applied()        { cnt_not_applied_ = 0; }
     int32 inc_cnt_not_applied()         { cnt_not_applied_++;
@@ -307,6 +391,29 @@ public:
     void set_lost() { lost_by_leader_ = true; }
     void set_recovered() { lost_by_leader_ = false; }
 
+    void handle_write_done(ptr<peer> myself,
+                        ptr<rpc_client> my_rpc_client,
+                        ptr<req_msg>& req,
+                        rpc_handler& when_done,
+                        rpc_handler& handle_write_done,
+                        ptr<resp_msg>& resp,
+                        ptr<rpc_exception>& err);
+    
+    void try_set_free();
+
+    void try_disable_streaming();
+
+    /**
+     * reset the stream mode
+    */
+    void reset_streaming() {
+        set_last_streamed_log_idx(0);
+        disable_append();
+        append_done();
+        write_done();
+        disable_streaming();
+        pending_read_reqs_.clear();
+    }
 private:
     void handle_rpc_result(ptr<peer> myself,
                            ptr<rpc_client> my_rpc_client,
@@ -314,6 +421,7 @@ private:
                            ptr<rpc_result>& pending_result,
                            ptr<resp_msg>& resp,
                            ptr<rpc_exception>& err);
+    void handle_append_entries_type(ptr<peer> myself, ptr<req_msg>& req, ptr<resp_msg>& resp, ptr<rpc_client> my_rpc_client);
 
     /**
      * Information (config) of this server.
@@ -359,6 +467,41 @@ private:
      * Next log index of this server.
      */
     std::atomic<ulong> next_log_idx_;
+
+    /**
+     * Last log index of streamed log.
+     */
+    std::atomic<ulong> last_streamed_log_idx_;
+
+    /**
+     * `true` if we enable streaming mode
+     */
+    std::atomic<bool> streaming_mode_flag_;
+
+    /**
+     * `true` if peer is locked by appending log
+     */
+    std::atomic<bool> appending_log_flag_;
+
+    /**
+     * `true` if peer is allowed to append log in streaming mode
+     */
+    std::atomic<bool> allowed_appending_log_flag_;
+
+    /**
+     * `true` if we sent message to this server
+     */
+    std::atomic<bool> writing_flag_;
+
+    /**
+     * Queue of request which is pending for reading
+     */
+    std::list<ptr<PeerReqPkg>> pending_read_reqs_;
+
+    /**
+     * Lock for pending_read_reqs_ queue.
+     */
+    std::mutex pending_read_reqs_lock_;
 
     /**
      * The last log index accepted by this server.

@@ -1042,6 +1042,7 @@ public:
         , socket_busy_(false)
         , operation_timer_(io_svc)
         , l_(l)
+        , read_strand(io_svc)
     {
         client_id_ = impl_->assign_client_id();
         if (ssl_enabled_) {
@@ -1124,10 +1125,53 @@ public:
             when_done(rsp, except);
             return;
         }
-        send(req, when_done, send_timeout_ms);
+        send_using_write_callback(req, when_done, send_timeout_ms);
+    }
+
+    virtual void async_read_response( ptr<req_msg>& req, 
+                              rpc_handler& when_done ) 
+    {
+        ptr<asio_rpc_client> self(this->shared_from_this());
+        ptr<buffer> resp_buf(buffer::alloc(RPC_RESP_HEADER_SIZE));
+        aa::read( ssl_enabled_, ssl_socket_, socket_,
+                  asio::buffer(resp_buf->data(), resp_buf->size()), 
+                  asio::bind_executor(read_strand,
+                  std::bind(&asio_rpc_client::response_read,
+                                self,
+                                req,
+                                when_done,
+                                resp_buf,
+                                std::placeholders::_1,
+                                std::placeholders::_2)));
     }
 
     virtual void send(ptr<req_msg>& req,
+                      rpc_handler& when_done,
+                      uint64_t send_timeout_ms = 0) __override__
+    {
+        rpc_handler write_done = (rpc_handler)std::bind
+                    ( &asio_rpc_client::default_write_done,
+                      this,
+                      req,
+                      when_done,
+                      std::placeholders::_1,
+                      std::placeholders::_2 );
+        send_using_write_callback(req, write_done, send_timeout_ms);
+    }
+
+    void default_write_done(ptr<req_msg>& req,
+                            rpc_handler& when_done,
+                            ptr<resp_msg>& resp,
+                            ptr<rpc_exception>& err) {
+        if (!err) {
+            async_read_response(req, when_done);
+        } else {
+            p_wn("send request to peer (%d) error: %s", req->get_dst(), err->what());
+            when_done(resp, err);
+        }
+    }
+
+    virtual void send_using_write_callback(ptr<req_msg>& req,
                       rpc_handler& when_done,
                       uint64_t send_timeout_ms = 0) __override__
     {
@@ -1453,14 +1497,14 @@ private:
             if (!socket_busy_.compare_exchange_strong(exp, true)) {
                 p_ft("socket %p is already in use, race happened on connection to %s:%s",
                      this, host_.c_str(), port_.c_str());
-                assert(0);
+                // assert(0);
             }
         } else {
             bool exp = true;
             if (!socket_busy_.compare_exchange_strong(exp, false)) {
                 p_ft("socket %p is already idle, race happened on connection to %s:%s",
                      this, host_.c_str(), port_.c_str());
-                assert(0);
+                // assert(0);
             }
         }
     }
@@ -1520,7 +1564,7 @@ private:
                                  std::placeholders::_1 ) );
 #endif
             } else {
-                this->send(req, when_done, send_timeout_ms);
+                this->send_using_write_callback(req, when_done, send_timeout_ms);
             }
 
         } else {
@@ -1547,7 +1591,7 @@ private:
             p_in( "handshake with %s:%s succeeded (as a client)",
                   host_.c_str(), port_.c_str() );
             ssl_ready_ = true;
-            this->send(req, when_done, send_timeout_ms);
+            this->send_using_write_callback(req, when_done, send_timeout_ms);
 
         } else {
             abandoned_ = true;
@@ -1576,20 +1620,10 @@ private:
     {
         // Now we can safely free the `req_buf`.
         (void)buf;
-        ptr<asio_rpc_client> self(this->shared_from_this());
         if (!err) {
-            // read a response
-            ptr<buffer> resp_buf(buffer::alloc(RPC_RESP_HEADER_SIZE));
-            aa::read( ssl_enabled_, ssl_socket_, socket_,
-                      asio::buffer(resp_buf->data(), resp_buf->size()),
-                      std::bind(&asio_rpc_client::response_read,
-                                self,
-                                req,
-                                when_done,
-                                resp_buf,
-                                std::placeholders::_1,
-                                std::placeholders::_2));
-
+            ptr<resp_msg> rsp;
+            ptr<rpc_exception> except;
+            when_done(rsp, except);
         } else {
             operation_timer_.cancel();
             abandoned_ = true;
@@ -1822,6 +1856,7 @@ private:
     uint64_t client_id_;
     asio::steady_timer operation_timer_;
     ptr<logger> l_;
+    asio::io_service::strand read_strand;
 };
 
 } // namespace nuraft
