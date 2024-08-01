@@ -607,7 +607,7 @@ ptr<req_msg> raft_server::create_append_entries_req(ptr<peer>& pp) {
              end_idx, adjusted_end_idx);
     }
 
-    p_db( "append_entries for %d with LastLogIndex=%" PRIu64 ", "
+    p_in( "append_entries for %d with LastLogIndex=%" PRIu64 ", "
           "LastLogTerm=%" PRIu64 ", EntriesLength=%zu, CommitIndex=%" PRIu64 ", "
           "Term=%" PRIu64 ", peer_last_sent_idx %" PRIu64,
           p.get_id(), last_log_idx, last_log_term,
@@ -902,7 +902,7 @@ ptr<resp_msg> raft_server::handle_append_entries(req_msg& req)
             p_in("last log index after rollback and overwrite: %" PRIu64,
                  log_store_->next_slot() - 1);
         }
-
+        p_in("start to append logs, size: %ld", req.log_entries().size());
         // Append new log entries
         while (cnt < req.log_entries().size()) {
             ptr<log_entry> entry = req.log_entries().at( cnt++ );
@@ -923,10 +923,12 @@ ptr<resp_msg> raft_server::handle_append_entries(req_msg& req)
 
             if (stopping_) return resp;
         }
+        p_in("end to append logs");
 
         // End of batch.
         log_store_->end_of_append_batch( req.get_last_log_idx() + 1,
                                          req.log_entries().size() );
+        p_in("end to flush the logs");
 
         ptr<raft_params> params = ctx_->get_params();
         if (params->parallel_log_appending_) {

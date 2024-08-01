@@ -1287,7 +1287,7 @@ public:
         }
 
         // Socket should be idle now. If not, it should be a bug.
-        set_busy_flag(true);
+        // set_busy_flag(true);
 
         // If we reach here, that means connection is valid.
         // Reset the counter.
@@ -1723,7 +1723,7 @@ private:
                                  std::placeholders::_2 ) );
         } else {
             operation_timer_.cancel();
-            set_busy_flag(false);
+            // set_busy_flag(false);
             ptr<rpc_exception> except;
             when_done(rsp, except);
         }
@@ -1746,7 +1746,7 @@ private:
             rsp->set_ctx(ctx_buf);
 
             operation_timer_.cancel();
-            set_busy_flag(false);
+            // set_busy_flag(false);
             ptr<rpc_exception> except;
             when_done(rsp, except);
             return;
@@ -1808,7 +1808,7 @@ private:
         }
 
         operation_timer_.cancel();
-        set_busy_flag(false);
+        // set_busy_flag(false);
         ptr<rpc_exception> except;
         when_done(rsp, except);
     }

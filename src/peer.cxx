@@ -133,9 +133,6 @@ void peer::handle_write_done( ptr<peer> myself,
                               ptr<rpc_exception>& err )
 {
     // only for append_entries_request
-    p_db("msg to peer %d has been write down, start_log_idx: %ld, size: %ld", config_->get_id(), 
-    req->get_last_log_idx(), req->log_entries().size());
-
     if (err) {
         when_done(resp, err);
         myself->write_done();
@@ -173,6 +170,8 @@ void peer::handle_write_done( ptr<peer> myself,
         } else {
             p_wn( "not a append entry type request here, type: %s", msg_type_to_string( req->get_type() ).c_str());
         }
+        p_in("msg to peer %d has been write down, start_log_idx: %ld, size: %ld, pending reqs: %ld", 
+        config_->get_id(), req->get_last_log_idx(), req->log_entries().size(), pending_read_reqs_.size());
         myself->write_done();
     }
     

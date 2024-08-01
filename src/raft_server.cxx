@@ -676,7 +676,7 @@ ptr<resp_msg> raft_server::process_req(req_msg& req,
         return nullptr;
     }
 
-    p_db( "Receive a %s message from %d with LastLogIndex=%" PRIu64 ", "
+    p_in( "Receive a %s message from %d with LastLogIndex=%" PRIu64 ", "
           "LastLogTerm %" PRIu64 ", EntriesLength=%zu, CommitIndex=%" PRIu64 " and Term=%" PRIu64 "",
           msg_type_to_string(req.get_type()).c_str(),
           req.get_src(),
@@ -756,7 +756,7 @@ ptr<resp_msg> raft_server::process_req(req_msg& req,
     }
 
     if (resp) {
-        p_db( "Response back a %s message to %d with Accepted=%d, "
+        p_in( "Response back a %s message to %d with Accepted=%d, "
               "Term=%" PRIu64 ", NextIndex=%" PRIu64 "",
               msg_type_to_string(resp->get_type()).c_str(),
               resp->get_dst(),
@@ -847,7 +847,7 @@ void raft_server::handle_peer_resp(ptr<resp_msg>& resp, ptr<rpc_exception>& err)
         return;
     }
 
-    p_db( "Receive a %s message from peer %d with "
+    p_in( "Receive a %s message from peer %d with "
           "Result=%d, Term=%" PRIu64 ", NextIndex=%" PRIu64 "",
           msg_type_to_string(resp->get_type()).c_str(),
           resp->get_src(),
