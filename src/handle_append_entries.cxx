@@ -531,6 +531,11 @@ ptr<req_msg> raft_server::create_append_entries_req(ptr<peer>& pp) {
         p.reset_cnt_not_applied();
     }
 
+    if (end_idx - last_log_idx < 50) {
+        ptr<req_msg> req;
+        return req;
+    }
+
     ptr<std::vector<ptr<log_entry>>> log_entries;
     if ((last_log_idx + 1) >= cur_nxt_idx) {
         log_entries = ptr<std::vector<ptr<log_entry>>>();
