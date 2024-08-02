@@ -450,7 +450,7 @@ void raft_server::handle_append_log_write_done(ptr<peer> p, ptr<resp_msg>& resp,
         // check like need_to_catchup, don't check pending commit here(too many)
         if (p->get_last_streamed_log_idx() + 1 < log_store_->next_slot()) {
             p_db("reqeust append entries need to catchup, p %d", (int)p->get_id());
-            request_append_entries(p);
+            request_append_entries(p, true);
         }
     }
 }
