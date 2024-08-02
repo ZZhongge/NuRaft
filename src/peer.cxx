@@ -179,6 +179,7 @@ void peer::handle_write_done( ptr<peer> myself,
 }
 
 bool peer::allow_sending_req() {
+    auto_lock(pending_read_reqs_lock_);
     return pending_read_reqs_.size() < 10;
 }
 
