@@ -447,8 +447,8 @@ bool raft_server::try_start_writing(ptr<peer>& p, bool make_busy_success) {
 
 void raft_server::handle_append_log_write_done(ptr<peer> p, ptr<resp_msg>& resp, ptr<rpc_exception>& err) {
     if (p->is_streaming() && ctx_->get_params()->enable_streaming_mode_) {
-        // check like need_to_catchup
-        if (p->clear_pending_commit() || p->get_last_streamed_log_idx() + 1 < log_store_->next_slot()) {
+        // check like need_to_catchup, don't check pending commit here(too many)
+        if (p->get_last_streamed_log_idx() + 1 < log_store_->next_slot()) {
             p_db("reqeust append entries need to catchup, p %d", (int)p->get_id());
             request_append_entries(p);
         }

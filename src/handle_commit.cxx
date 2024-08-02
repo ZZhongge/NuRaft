@@ -47,14 +47,14 @@ void raft_server::commit(ulong target_idx) {
         // if this is a leader notify peers to commit as well
         // for peers that are free, send the request, otherwise,
         // set pending commit flag for that peer
-        if (role_ == srv_role::leader) {
-            for (peer_itor it = peers_.begin(); it != peers_.end(); ++it) {
-                ptr<peer> pp = it->second;
-                if (!request_append_entries(pp)) {
-                    pp->set_pending_commit();
-                }
-            }
-        }
+        // if (role_ == srv_role::leader) {
+        //     for (peer_itor it = peers_.begin(); it != peers_.end(); ++it) {
+        //         ptr<peer> pp = it->second;
+        //         if (!request_append_entries(pp)) {
+        //             pp->set_pending_commit();
+        //         }
+        //     }
+        // }
     }
 
     p_tr( "local log idx %" PRIu64 ", target_commit_idx %" PRIu64 ", "
