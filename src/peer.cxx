@@ -175,8 +175,11 @@ void peer::handle_write_done( ptr<peer> myself,
         myself->write_done();
     }
     
-    handle_write_done(resp, err);
-    
+    // handle_write_done(resp, err);
+}
+
+bool peer::allow_sending_req() {
+    return pending_read_reqs_.size() < 10;
 }
 
 void peer::handle_append_entries_type(ptr<peer> myself, 

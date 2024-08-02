@@ -403,6 +403,8 @@ public:
 
     void try_disable_streaming();
 
+    bool allow_sending_req();
+
     /**
      * reset the stream mode
     */

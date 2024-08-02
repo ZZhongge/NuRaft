@@ -115,10 +115,10 @@ void raft_server::append_entries_in_bg() {
 
 void raft_server::append_entries_in_bg_exec() {
     recur_lock(lock_);
-    request_append_entries(true);
+    request_append_entries();
 }
 
-void raft_server::request_append_entries(bool is_bg) {
+void raft_server::request_append_entries() {
     // Special case:
     //   1) one-node cluster, OR
     //   2) quorum size == 1 (including leader).
@@ -134,11 +134,11 @@ void raft_server::request_append_entries(bool is_bg) {
     }
 
     for (peer_itor it = peers_.begin(); it != peers_.end(); ++it) {
-        request_append_entries(it->second, is_bg);
+        request_append_entries(it->second);
     }
 }
 
-bool raft_server::request_append_entries(ptr<peer> p, bool is_bg) {
+bool raft_server::request_append_entries(ptr<peer> p) {
     static timer_helper chk_timer(1000*1000);
 
     // Checking the validity of role first.
@@ -295,7 +295,7 @@ bool raft_server::request_append_entries(ptr<peer> p, bool is_bg) {
 
         } else {
             // Normal message.
-            msg = create_append_entries_req(p, is_bg);
+            msg = create_append_entries_req(p);
             m_handler = resp_handler_;
         }
 
@@ -446,16 +446,16 @@ bool raft_server::try_start_writing(ptr<peer>& p, bool make_busy_success) {
 }
 
 void raft_server::handle_append_log_write_done(ptr<peer> p, ptr<resp_msg>& resp, ptr<rpc_exception>& err) {
-    if (p->is_streaming() && ctx_->get_params()->enable_streaming_mode_) {
-        // check like need_to_catchup, don't check pending commit here(too many)
-        if (p->get_last_streamed_log_idx() + 1 < log_store_->next_slot()) {
-            p_db("reqeust append entries need to catchup, p %d", (int)p->get_id());
-            request_append_entries(p, true);
-        }
-    }
+    // if (p->is_streaming() && ctx_->get_params()->enable_streaming_mode_) {
+    //     // check like need_to_catchup, don't check pending commit here(too many)
+    //     if (p->get_last_streamed_log_idx() + 1 < log_store_->next_slot()) {
+    //         p_db("reqeust append entries need to catchup, p %d", (int)p->get_id());
+    //         request_append_entries(p, true);
+    //     }
+    // }
 }
 
-ptr<req_msg> raft_server::create_append_entries_req(ptr<peer>& pp, bool is_bg) {
+ptr<req_msg> raft_server::create_append_entries_req(ptr<peer>& pp) {
     peer& p = *pp;
     ulong cur_nxt_idx(0L);
     ulong commit_idx(0L);
@@ -511,11 +511,6 @@ ptr<req_msg> raft_server::create_append_entries_req(ptr<peer>& pp, bool is_bg) {
     // return nullptr to indicate such errors.
     ulong end_idx = std::min( cur_nxt_idx,
                               last_log_idx + 1 + ctx_->get_params()->max_append_size_ );
-    
-    if (end_idx - last_log_idx < 50 && is_bg) {
-        ptr<req_msg> req;
-        return req;
-    }
 
     // NOTE: If this is a retry, probably the follower is down.
     //       Send just one log until it comes back
@@ -624,6 +619,11 @@ ptr<req_msg> raft_server::create_append_entries_req(ptr<peer>& pp, bool is_bg) {
         p_db( "idx: %" PRIu64, last_log_idx+1 );
     } else {
         p_db( "idx range: %" PRIu64 "-%" PRIu64, last_log_idx+1, adjusted_end_idx-1 );
+    }
+
+    if (!p.allow_sending_req()) {
+        ptr<req_msg> req;
+        return req;
     }
 
     ptr<req_msg> req
@@ -1222,11 +1222,6 @@ void raft_server::handle_append_entries_resp(resp_msg& resp) {
         need_to_catchup = false;
         // also need to disable streaming
         p->disable_append();
-    }
-
-    if (p->is_streaming() && ctx_->get_params()->enable_streaming_mode_) {
-        // in streaming mode, catchup will be triggered after request sent.
-        need_to_catchup = false;
     }
 
     // This may not be a leader anymore,
