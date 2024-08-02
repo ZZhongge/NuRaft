@@ -115,10 +115,10 @@ void raft_server::append_entries_in_bg() {
 
 void raft_server::append_entries_in_bg_exec() {
     recur_lock(lock_);
-    request_append_entries();
+    request_append_entries(true);
 }
 
-void raft_server::request_append_entries() {
+void raft_server::request_append_entries(bool is_bg) {
     // Special case:
     //   1) one-node cluster, OR
     //   2) quorum size == 1 (including leader).
@@ -134,11 +134,11 @@ void raft_server::request_append_entries() {
     }
 
     for (peer_itor it = peers_.begin(); it != peers_.end(); ++it) {
-        request_append_entries(it->second);
+        request_append_entries(it->second, is_bg);
     }
 }
 
-bool raft_server::request_append_entries(ptr<peer> p) {
+bool raft_server::request_append_entries(ptr<peer> p, bool is_bg) {
     static timer_helper chk_timer(1000*1000);
 
     // Checking the validity of role first.
@@ -295,7 +295,7 @@ bool raft_server::request_append_entries(ptr<peer> p) {
 
         } else {
             // Normal message.
-            msg = create_append_entries_req(p);
+            msg = create_append_entries_req(p, is_bg);
             m_handler = resp_handler_;
         }
 
@@ -455,7 +455,7 @@ void raft_server::handle_append_log_write_done(ptr<peer> p, ptr<resp_msg>& resp,
     }
 }
 
-ptr<req_msg> raft_server::create_append_entries_req(ptr<peer>& pp) {
+ptr<req_msg> raft_server::create_append_entries_req(ptr<peer>& pp, bool is_bg) {
     peer& p = *pp;
     ulong cur_nxt_idx(0L);
     ulong commit_idx(0L);
@@ -511,6 +511,11 @@ ptr<req_msg> raft_server::create_append_entries_req(ptr<peer>& pp) {
     // return nullptr to indicate such errors.
     ulong end_idx = std::min( cur_nxt_idx,
                               last_log_idx + 1 + ctx_->get_params()->max_append_size_ );
+    
+    if (end_idx - last_log_idx < 50 && is_bg) {
+        ptr<req_msg> req;
+        return req;
+    }
 
     // NOTE: If this is a retry, probably the follower is down.
     //       Send just one log until it comes back
@@ -529,11 +534,6 @@ ptr<req_msg> raft_server::create_append_entries_req(ptr<peer>& pp) {
         }
     } else {
         p.reset_cnt_not_applied();
-    }
-
-    if (end_idx - last_log_idx < 50) {
-        ptr<req_msg> req;
-        return req;
     }
 
     ptr<std::vector<ptr<log_entry>>> log_entries;
