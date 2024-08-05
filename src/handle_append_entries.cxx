@@ -1302,7 +1302,7 @@ ulong raft_server::get_expected_committed_log_idx() {
         }
     }
 
-    if (l_ && l_->get_level() >= 6) {
+    if (l_ && l_->get_level() >= 4) {
         std::string tmp_str;
         for (ulong m_idx: matched_indexes) {
             tmp_str += std::to_string(m_idx) + " ";
