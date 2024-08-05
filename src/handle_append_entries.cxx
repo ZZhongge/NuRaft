@@ -627,11 +627,6 @@ ptr<req_msg> raft_server::create_append_entries_req(ptr<peer>& pp, bool can_send
         p_db( "idx range: %" PRIu64 "-%" PRIu64, last_log_idx+1, adjusted_end_idx-1 );
     }
 
-    if (!p.allow_sending_req()) {
-        ptr<req_msg> req;
-        return req;
-    }
-
     ptr<req_msg> req
         ( cs_new<req_msg>
           ( term, msg_type::append_entries_request, id_, p.get_id(),
