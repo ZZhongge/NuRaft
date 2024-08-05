@@ -1307,7 +1307,7 @@ ulong raft_server::get_expected_committed_log_idx() {
         for (ulong m_idx: matched_indexes) {
             tmp_str += std::to_string(m_idx) + " ";
         }
-        p_tr("quorum idx %zu, %s", quorum_idx, tmp_str.c_str());
+        p_in("quorum idx %zu, %s", quorum_idx, tmp_str.c_str());
     }
 
     aci_params.current_commit_index_ = quick_commit_index_;

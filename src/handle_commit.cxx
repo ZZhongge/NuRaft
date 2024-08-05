@@ -42,7 +42,7 @@ void raft_server::commit(ulong target_idx) {
     if (target_idx > quick_commit_index_) {
         quick_commit_index_ = target_idx;
         lagging_sm_target_index_ = target_idx;
-        p_db( "trigger commit upto %" PRIu64 "", quick_commit_index_.load() );
+        p_in( "trigger commit upto %" PRIu64 "", quick_commit_index_.load() );
 
         // if this is a leader notify peers to commit as well
         // for peers that are free, send the request, otherwise,
@@ -120,7 +120,7 @@ void raft_server::commit_in_bg() {
                 return ( log_store_->next_slot() - 1 > sm_commit_index_ &&
                          quick_commit_index_ > sm_commit_index_ );
             };
-            p_tr("commit_cv_ sleep\n");
+            p_in("commit_cv_ sleep\n");
             commit_cv_.wait(lock, wait_check);
 
             p_tr("commit_cv_ wake up\n");
@@ -181,7 +181,7 @@ bool raft_server::commit_in_bg_exec(size_t timeout_ms) {
         ea_sm_commit_exec_in_progress_->invoke();
     });
 
-    p_db( "commit upto %" PRIu64 ", curruent idx %" PRIu64,
+    p_in( "commit upto %" PRIu64 ", curruent idx %" PRIu64,
           quick_commit_index_.load(), sm_commit_index_.load() );
 
     ulong log_start_idx = log_store_->start_index();
