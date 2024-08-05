@@ -103,6 +103,7 @@ raft_server::set_priority(const int srv_id,
     uncommitted_config_ = cloned_config;
 
     store_log_entry(entry);
+    p_in("append log request for priority");
     request_append_entries();
     return PrioritySetResult::SET;
 }

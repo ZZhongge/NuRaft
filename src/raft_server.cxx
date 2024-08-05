@@ -1095,6 +1095,7 @@ void raft_server::become_leader() {
     pre_vote_.failure_count_ = 0;
     data_fresh_ = true;
 
+    p_in("append log request for becoming leader");
     request_append_entries();
 
     if (my_priority_ == 0 && get_num_voting_members() > 1) {
@@ -1652,6 +1653,7 @@ void raft_server::set_user_ctx(const std::string& ctx) {
                              log_val_type::conf,
                              timer_helper::get_timeofday_us() );
     store_log_entry(entry);
+    p_in("append log request for user ctx");
     request_append_entries();
 }
 

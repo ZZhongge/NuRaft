@@ -396,6 +396,7 @@ void raft_server::handle_install_snapshot_resp(resp_msg& resp) {
     // and the role was updated by UpdateTerm call
     // Try to match up the logs for this peer
     if (role_ == srv_role::leader && need_to_catchup) {
+        p_in("append log request for snapshot catchup");
         request_append_entries(p);
     }
 }

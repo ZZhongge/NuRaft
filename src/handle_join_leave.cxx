@@ -271,6 +271,7 @@ void raft_server::sync_log_to_new_srv(ulong start_idx) {
         store_log_entry(entry);
         config_changing_ = true;
         uncommitted_config_ = new_conf;
+        p_in("append log request for sync log");
         request_append_entries();
         return;
     }
@@ -543,7 +544,7 @@ void raft_server::rm_srv_from_cluster(int32 srv_id) {
              "server %d will be removed from cluster, config %" PRIu64,
              srv_id, srv_to_leave_target_idx_);
     }
-
+    p_in("append log request for leave");
     request_append_entries();
 }
 

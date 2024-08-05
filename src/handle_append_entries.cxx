@@ -115,6 +115,7 @@ void raft_server::append_entries_in_bg() {
 
 void raft_server::append_entries_in_bg_exec() {
     recur_lock(lock_);
+    p_in("append log request for background");
     request_append_entries();
 }
 
@@ -138,7 +139,7 @@ void raft_server::request_append_entries() {
     }
 }
 
-bool raft_server::request_append_entries(ptr<peer> p) {
+bool raft_server::request_append_entries(ptr<peer> p, bool can_send_empty) {
     static timer_helper chk_timer(1000*1000);
 
     // Checking the validity of role first.
@@ -295,7 +296,7 @@ bool raft_server::request_append_entries(ptr<peer> p) {
 
         } else {
             // Normal message.
-            msg = create_append_entries_req(p);
+            msg = create_append_entries_req(p, can_send_empty);
             m_handler = resp_handler_;
         }
 
@@ -455,7 +456,7 @@ void raft_server::handle_append_log_write_done(ptr<peer> p, ptr<resp_msg>& resp,
     // }
 }
 
-ptr<req_msg> raft_server::create_append_entries_req(ptr<peer>& pp) {
+ptr<req_msg> raft_server::create_append_entries_req(ptr<peer>& pp, bool can_send_empty) {
     peer& p = *pp;
     ulong cur_nxt_idx(0L);
     ulong commit_idx(0L);
@@ -615,6 +616,11 @@ ptr<req_msg> raft_server::create_append_entries_req(ptr<peer>& pp) {
           peer_last_sent_idx );
     if (last_log_idx+1 == adjusted_end_idx) {
         p_tr( "EMPTY PAYLOAD" );
+        if (!can_send_empty) {
+            ptr<req_msg> req;
+            return req;
+        }
+        
     } else if (last_log_idx+1 + 1 == adjusted_end_idx) {
         p_db( "idx: %" PRIu64, last_log_idx+1 );
     } else {
@@ -1230,7 +1236,7 @@ void raft_server::handle_append_entries_resp(resp_msg& resp) {
     // Try to match up the logs for this peer
     if (role_ == srv_role::leader) {
         if (need_to_catchup) {
-            p_db("reqeust append entries need to catchup, p %d\n",
+            p_in("reqeust append entries need to catchup, p %d\n",
                  (int)p->get_id());
             request_append_entries(p);
         }
@@ -1343,6 +1349,7 @@ void raft_server::notify_log_append_completion(bool ok) {
         if (quick_commit_index_ > prev_committed_index) {
             // Commit index has been changed as a result of log appending.
             // Send replication messages.
+            p_in("append log request for append completion notify");
             request_append_entries_for_all();
         }
     } else {

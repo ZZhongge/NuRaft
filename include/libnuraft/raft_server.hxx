@@ -928,7 +928,7 @@ protected:
     void initiate_vote(bool force_vote = false);
     void request_vote(bool force_vote);
     void request_append_entries();
-    bool request_append_entries(ptr<peer> p);
+    bool request_append_entries(ptr<peer> p, bool can_send_empty = false);
     void handle_peer_resp(ptr<resp_msg>& resp, ptr<rpc_exception>& err);
     void handle_append_entries_resp(resp_msg& resp);
     void handle_install_snapshot_resp(resp_msg& resp);
@@ -948,7 +948,7 @@ protected:
     bool try_start_writing(ptr<peer>& p, bool make_busy_success);
     void reset_srv_to_join();
     void reset_srv_to_leave();
-    ptr<req_msg> create_append_entries_req(ptr<peer>& pp);
+    ptr<req_msg> create_append_entries_req(ptr<peer>& pp, bool can_send_empty);
     ptr<req_msg> create_sync_snapshot_req(ptr<peer>& pp,
                                           ulong last_log_idx,
                                           ulong term,

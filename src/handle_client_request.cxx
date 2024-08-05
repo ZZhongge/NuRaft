@@ -58,6 +58,7 @@ ptr<resp_msg> raft_server::handle_cli_req_prelock(req_msg& req,
     }
 
     // Urgent commit, so that the commit will not depend on hb.
+    p_in("append log request for urgent commit");
     request_append_entries_for_all();
 
     return resp;
@@ -78,6 +79,7 @@ void raft_server::request_append_entries_for_all() {
     } else {
         // Directly generate request in user thread.
         recur_lock(lock_);
+        p_in("append log request for directly sending");
         request_append_entries();
     }
 }

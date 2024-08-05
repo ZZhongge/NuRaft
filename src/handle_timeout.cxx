@@ -142,7 +142,8 @@ void raft_server::handle_hb_timeout(int32 srv_id) {
     p_db("heartbeat timeout for %d", p->get_id());
     if (role_ == srv_role::leader) {
         update_target_priority();
-        request_append_entries(p);
+        p_in("append log request for timeout");
+        request_append_entries(p, true);
         {
             std::lock_guard<std::mutex> guard(p->get_lock());
             if (p->is_hb_enabled()) {
