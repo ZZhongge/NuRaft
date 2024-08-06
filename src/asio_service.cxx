@@ -970,6 +970,8 @@ private:
                        const ERROR_CODE& err)
     {
         if (!err) {
+            asio::ip::tcp::no_delay option(true);
+            session->socket().set_option(option);
             p_in("receive a incoming rpc connection");
             session->prepare_handshake();
 
@@ -1548,6 +1550,8 @@ private:
     {
         operation_timer_.cancel();
         if (!err) {
+            asio::ip::tcp::no_delay option(true);
+            socket().set_option(option);
             p_in( "%p connected to %s:%s (as a client)",
                   this, host_.c_str(), port_.c_str() );
             if (ssl_enabled_) {
