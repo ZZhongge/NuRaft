@@ -47,6 +47,12 @@ public:
     virtual uint64_t get_id() const = 0;
 
     virtual bool is_abandoned() const = 0;
+
+    virtual bool make_write_busy() = 0;
+
+    virtual bool has_flying_request() const = 0;
+
+    virtual void free_write() = 0;
 };
 
 }

@@ -153,6 +153,12 @@ public:
 
     bool is_abandoned() const;
 
+    bool make_write_busy();
+
+    bool has_flying_request();
+
+    void free_write();
+
 private:
     uint64_t myId;
     FakeNetwork* motherNet;
