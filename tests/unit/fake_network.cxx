@@ -332,7 +332,7 @@ bool FakeClient::make_write_busy() {
     return true;
 }
 
-bool FakeClient::has_flying_request() {
+bool FakeClient::has_flying_request() const {
     return pendingReqs.size() == 1;
 }
 

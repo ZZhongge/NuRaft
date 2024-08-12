@@ -155,7 +155,7 @@ public:
 
     bool make_write_busy();
 
-    bool has_flying_request();
+    bool has_flying_request() const;
 
     void free_write();
 
