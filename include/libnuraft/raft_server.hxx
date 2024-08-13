@@ -928,7 +928,7 @@ protected:
     void initiate_vote(bool force_vote = false);
     void request_vote(bool force_vote);
     void request_append_entries();
-    bool request_append_entries(ptr<peer> p, bool can_send_empty = false);
+    bool request_append_entries(ptr<peer> p);
     void handle_peer_resp(ptr<resp_msg>& resp, ptr<rpc_exception>& err);
     void handle_append_entries_resp(resp_msg& resp);
     void handle_install_snapshot_resp(resp_msg& resp);
@@ -944,11 +944,10 @@ protected:
     void handle_ext_resp(ptr<resp_msg>& resp, ptr<rpc_exception>& err);
     void handle_ext_resp_err(rpc_exception& err);
     void handle_join_leave_rpc_err(msg_type t_msg, ptr<peer> p);
-    void handle_append_log_write_done(ptr<peer> p, ptr<resp_msg>& resp, ptr<rpc_exception>& err);
     bool try_start_writing(ptr<peer>& p, bool make_busy_success);
     void reset_srv_to_join();
     void reset_srv_to_leave();
-    ptr<req_msg> create_append_entries_req(ptr<peer>& pp, bool can_send_empty);
+    ptr<req_msg> create_append_entries_req(ptr<peer>& pp);
     ptr<req_msg> create_sync_snapshot_req(ptr<peer>& pp,
                                           ulong last_log_idx,
                                           ulong term,
@@ -1256,6 +1255,12 @@ protected:
      * `append_entries` handler.
      */
     std::atomic<bool> serving_req_;
+
+    /**
+     * `true` if this server is in the middle of
+     * `append_entries` handler.
+     */
+    std::atomic<ulong> serving_req_num_;
 
     /**
      * Number of steps remaining to turn off this server.

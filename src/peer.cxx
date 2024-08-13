@@ -27,14 +27,14 @@ limitations under the License.
 
 namespace nuraft {
 
-void peer::send_req( ptr<peer> myself,
+bool peer::send_req( ptr<peer> myself,
                      ptr<req_msg>& req,
                      rpc_handler& handler )
 {
     if (abandoned_) {
         p_er("peer %d has been shut down, cannot send request",
              config_->get_id());
-        return;
+        return false;
     }
 
     if (req) {
@@ -52,202 +52,46 @@ void peer::send_req( ptr<peer> myself,
             // to serve next operation.
             p_tr("rpc local is null");
             set_free();
-            return;
+            return false;
         }
         rpc_local = rpc_;
-    }
-    rpc_handler h = (rpc_handler)std::bind
-                    ( &peer::handle_rpc_result,
-                      this,
-                      myself,
-                      rpc_local,
-                      req,
-                      pending,
-                      std::placeholders::_1,
-                      std::placeholders::_2 );
-    if (rpc_local) {
-        rpc_local->send(req, h);
-    }
-}
-
-void peer::send_req_with_write_callback(ptr<peer> myself,
-                ptr<req_msg>& req,
-                rpc_handler& handler, rpc_handler& write_handler)
-{
-    if (abandoned_) {
-        p_er("peer %d has been shut down, cannot send request",
-             config_->get_id());
-        return;
-    }
-
-    if (req) {
-        p_tr("send req %d -> %d, type %s",
-             req->get_src(),
-             req->get_dst(),
-             msg_type_to_string( req->get_type() ).c_str() );
-    }
-
-    ptr<rpc_result> pending = cs_new<rpc_result>(handler);
-    ptr<rpc_client> rpc_local = nullptr;
-    {   std::lock_guard<std::mutex> l(rpc_protector_);
-        if (!rpc_) {
-            // Nothing will be sent, immediately free it
-            // to serve next operation.
-            p_tr("rpc local is null");
-            write_done();
-            set_free();
-            return;
-        }
-        rpc_local = rpc_;
-    }
-    rpc_handler h = (rpc_handler)std::bind
-                    ( &peer::handle_rpc_result,
-                      this,
-                      myself,
-                      rpc_local,
-                      req,
-                      pending,
-                      std::placeholders::_1,
-                      std::placeholders::_2 );
-    rpc_handler w = (rpc_handler)std::bind
-                ( &peer::handle_write_done,
-                    this,
-                    myself,
-                    rpc_local,
-                    req,
-                    h,
-                    write_handler,
-                    std::placeholders::_1,
-                    std::placeholders::_2 );
-    if (rpc_local) {
-        rpc_local->send_using_write_callback(req, w);
-    }
-}
-
-void peer::handle_write_done( ptr<peer> myself,
-                              ptr<rpc_client> my_rpc_client,
-                              ptr<req_msg>& req,
-                              rpc_handler& when_done,
-                              rpc_handler& handle_write_done,
-                              ptr<resp_msg>& resp,
-                              ptr<rpc_exception>& err )
-{
-    // only for append_entries_request
-    if (err) {
-        when_done(resp, err);
-        myself->write_done();
-        return;
-    }
-
-    {
-        std::lock_guard<std::mutex> l(rpc_protector_);
-        // check rpc_id
-        uint64_t cur_rpc_id = rpc_ ? rpc_->get_id() : 0;
-        uint64_t given_rpc_id = my_rpc_client ? my_rpc_client->get_id() : 0;
-        if (cur_rpc_id != given_rpc_id) {
-            p_wn( "[EDGE CASE] got stale RPC write down callback from %d: "
-                    "current %p (%" PRIu64 "), from parameter %p (%" PRIu64 "). "
-                    "will ignore this write down callback",
-                    config_->get_id(),
-                    rpc_.get(),
-                    cur_rpc_id,
-                    my_rpc_client.get(),
-                    given_rpc_id );
-            return;
-        }
-
-        
-        auto_lock(pending_read_reqs_lock_);
-        // process pending request
-        if (pending_read_reqs_.empty()) {
-            p_db("no pending reqs, start to read, start_log_idx: %ld", req->get_last_log_idx());
-            my_rpc_client->async_read_response(req, when_done);
-        }
-        pending_read_reqs_.push_back(cs_new<PeerReqPkg>(req, when_done));
-        // update last_streamed_log_idx_ = last log index + log size
-        if (req->get_type() == msg_type::append_entries_request) {
-            myself->set_last_streamed_log_idx(req->get_last_log_idx() + req->log_entries().size());
-        } else {
-            p_wn( "not a append entry type request here, type: %s", msg_type_to_string( req->get_type() ).c_str());
-        }
-        p_in("msg to peer %d has been write down, start_log_idx: %ld, size: %ld, pending reqs: %ld", 
-        config_->get_id(), req->get_last_log_idx(), req->log_entries().size(), pending_read_reqs_.size());
-        myself->write_done();
     }
     
-    // handle_write_done(resp, err);
-}
-
-bool peer::allow_sending_req() {
-    auto_lock(pending_read_reqs_lock_);
-    return pending_read_reqs_.size() < 10;
+    rpc_handler h = (rpc_handler)std::bind
+                    ( &peer::handle_rpc_result,
+                      this,
+                      myself,
+                      rpc_local,
+                      req,
+                      pending,
+                      std::placeholders::_1,
+                      std::placeholders::_2 );
+    if (rpc_local) {
+        if (rpc_local->start_writing()) {
+            if (!(req->get_type() == msg_type::append_entries_request) || is_busy()) {
+                rpc_local->send(req, h);
+                return true;
+            } else {
+                rpc_local->write_done();
+            }
+        }
+    }
+    return false;
 }
 
 void peer::handle_append_entries_type(ptr<peer> myself, 
                                          ptr<req_msg>& req, 
                                          ptr<resp_msg>& resp, 
-                                         ptr<rpc_client> my_rpc_client) {
-    // trigger another read and try release lock, todo: if we need to serialize all the read
-    auto_lock(pending_read_reqs_lock_);
-    if (req) {
-        auto bi = pending_read_reqs_.begin();
-        ptr<req_msg> pending_req = (*bi)->get_req();
-        if (req != pending_req) {
-            p_wn("req not match, req start_log_idx: %ld, pending req start_log_idx: %ld", 
-            req->get_last_log_idx(), pending_req->get_last_log_idx());
+                                         ptr<rpc_client> my_rpc_client) {    
+    if (my_rpc_client->start_writing()) {
+        p_db("release lock for peer: %d", myself->get_id());
+        // release lock here, still in streaming mode
+        if (my_rpc_client->is_queue_empty()) {
+            // need redefine those disable and enable process
+            append_done();
+            set_free();
         }
-    }
-
-    
-    if (myself->is_allowed_appending() && resp->get_accepted()) {
-        // in appending log (no other request) and resp is accepted
-        // even if the write thread set the allow appening to free, due to no lock protection for this flag, it may filp up and down.
-        // but eventually it becomes disable
-        myself->enable_streaming();
-    } else {
-        // after set this flag to prevent streaming, because it is not protected by a lock, maybe one or few request are still sent.
-        myself->disable_append();
-    }
-    
-    
-    pending_read_reqs_.pop_front();
-    if (!pending_read_reqs_.empty()) {
-        auto bi = pending_read_reqs_.begin();
-        ptr<PeerReqPkg> next_req_pkg = (*bi);
-        ptr<req_msg> next_req = next_req_pkg->get_req();
-        my_rpc_client->async_read_response(next_req, next_req_pkg->get_when_done());
-        p_db("trigger next read, start_log_idx: %ld", next_req->get_last_log_idx());
-    } else {
-        p_db("start to get write lock for peer: %d, lock: %d", myself->get_id(), myself->is_writing());
-        if (start_writing()) {
-            p_db("release lock for peer: %d", myself->get_id());
-            // release lock here, still in streaming mode
-            if (is_busy() && is_appending()) {
-                try_disable_streaming();
-                append_done();
-                set_free();
-            } else {
-                p_wn("lock is free by write thread, peer: %d ", get_id());
-            }
-            write_done();
-        }
-    }
-}
-
-void peer::try_set_free() {
-    std::lock_guard<std::mutex> l(rpc_protector_);
-    auto_lock(pending_read_reqs_lock_);
-    if (pending_read_reqs_.empty() && is_appending() && is_busy()) {
-        p_wn("try set free for peer: %d success, free lock in read callback will skip", get_id());
-        try_disable_streaming();
-        append_done();
-        set_free();
-    }
-}
-
-void peer::try_disable_streaming() {
-    if (!try_disable_append()) {
-        disable_streaming();
+        my_rpc_client->write_done();
     }
 }
 

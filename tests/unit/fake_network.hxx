@@ -145,12 +145,11 @@ public:
 
     void send(ptr<req_msg>& req, rpc_handler& when_done, uint64_t send_timeout_ms = 0);
 
-    void send_using_write_callback(ptr<req_msg>& req,
-                      rpc_handler& when_done,
-                      uint64_t send_timeout_ms = 0);
+    bool start_writing();
 
-    void async_read_response( ptr<req_msg>& req, 
-                              rpc_handler& when_done );
+    bool is_queue_empty();
+
+    void write_done();
 
     void dropPackets();
 

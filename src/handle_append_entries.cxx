@@ -139,7 +139,7 @@ void raft_server::request_append_entries() {
     }
 }
 
-bool raft_server::request_append_entries(ptr<peer> p, bool can_send_empty) {
+bool raft_server::request_append_entries(ptr<peer> p) {
     static timer_helper chk_timer(1000*1000);
 
     // Checking the validity of role first.
@@ -278,7 +278,9 @@ bool raft_server::request_append_entries(ptr<peer> p, bool can_send_empty) {
         if (make_busy_success) {
             p_tr("send first request to %d", (int)p->get_id());
             p->start_append();
-            p->enable_append();
+            if (!p->is_streaming()) {
+                p->first_append();
+            }
         } else {
             p_tr("send following request to %d", (int)p->get_id());
         }        
@@ -296,20 +298,18 @@ bool raft_server::request_append_entries(ptr<peer> p, bool can_send_empty) {
 
         } else {
             // Normal message.
-            msg = create_append_entries_req(p, can_send_empty);
+            msg = create_append_entries_req(p);
             m_handler = resp_handler_;
         }
 
         if (!msg) {
             // Even normal message doesn't exist.
             if (make_busy_success) {
-                p->disable_append();
+                p->try_finish_first_append();
                 p->append_done();
                 p->set_free();
-            } else {
-                p->try_set_free();
             }
-            p->write_done();
+            p->peer_write_done();
 
             if ( params->use_bg_thread_for_snapshot_io_ &&
                  p->get_snapshot_sync_ctx() ) {
@@ -349,16 +349,14 @@ bool raft_server::request_append_entries(ptr<peer> p, bool can_send_empty) {
         }
 
         if (msg->get_type() == msg_type::append_entries_request) {
-            rpc_handler w = (rpc_handler)std::bind
-                ( 
-                &raft_server::handle_append_log_write_done,
-                this,
-                p,
-                std::placeholders::_1,
-                std::placeholders::_2 );
-            p->send_req_with_write_callback(p, msg, m_handler, w);
+            if (p->send_req(p, msg, m_handler)) {
+                // update last_streamed_log_idx_ = last log index + log size
+                p->set_last_streamed_log_idx(msg->get_last_log_idx() + msg->log_entries().size());
+            }
+
+            p->peer_write_done();
         } else {
-            p->disable_append();
+            p->try_finish_first_append();
             // it is not an append entry request, disable stream here, and let flying request finish
             if (make_busy_success) {
                 // there is no flying request, send this request, clear reserved msg here
@@ -368,13 +366,12 @@ bool raft_server::request_append_entries(ptr<peer> p, bool can_send_empty) {
 
                 p->disable_streaming();
                 p->append_done();
-                p->write_done();
+                p->peer_write_done();
                 p->send_req(p, msg, m_handler);
             } else {
                 p_wn("there are flying append log requests, peer %d is busy now for %s", p->get_id(), 
                 msg_type_to_string(msg->get_type()).c_str());
-                p->try_set_free();
-                p->write_done();
+                p->peer_write_done();
                 return false;
             }
         }
@@ -426,16 +423,14 @@ bool raft_server::request_append_entries(ptr<peer> p, bool can_send_empty) {
 }
 
 bool raft_server::try_start_writing(ptr<peer>& p, bool make_busy_success) {
-    if (p->start_writing()) {
+    if (p->peer_start_writing()) {
         bool success = make_busy_success || (p->is_streaming() && ctx_->get_params()->enable_streaming_mode_);
         if (!success) {
             if (make_busy_success) {
                 p->set_free();
-            } else {
-                p->try_set_free();
             }
 
-            p->write_done();
+            p->peer_write_done();
         }
         return success;
     }
@@ -446,17 +441,7 @@ bool raft_server::try_start_writing(ptr<peer>& p, bool make_busy_success) {
     return false;
 }
 
-void raft_server::handle_append_log_write_done(ptr<peer> p, ptr<resp_msg>& resp, ptr<rpc_exception>& err) {
-    // if (p->is_streaming() && ctx_->get_params()->enable_streaming_mode_) {
-    //     // check like need_to_catchup, don't check pending commit here(too many)
-    //     if (p->get_last_streamed_log_idx() + 1 < log_store_->next_slot()) {
-    //         p_db("reqeust append entries need to catchup, p %d", (int)p->get_id());
-    //         request_append_entries(p, true);
-    //     }
-    // }
-}
-
-ptr<req_msg> raft_server::create_append_entries_req(ptr<peer>& pp, bool can_send_empty) {
+ptr<req_msg> raft_server::create_append_entries_req(ptr<peer>& pp) {
     peer& p = *pp;
     ulong cur_nxt_idx(0L);
     ulong commit_idx(0L);
@@ -616,11 +601,6 @@ ptr<req_msg> raft_server::create_append_entries_req(ptr<peer>& pp, bool can_send
           peer_last_sent_idx );
     if (last_log_idx+1 == adjusted_end_idx) {
         p_tr( "EMPTY PAYLOAD" );
-        if (!can_send_empty) {
-            ptr<req_msg> req;
-            return req;
-        }
-        
     } else if (last_log_idx+1 + 1 == adjusted_end_idx) {
         p_db( "idx: %" PRIu64, last_log_idx+1 );
     } else {
@@ -1115,6 +1095,11 @@ void raft_server::handle_append_entries_resp(resp_msg& resp) {
         commit( committed_index );
         need_to_catchup = p->clear_pending_commit() ||
                           resp.get_next_idx() < log_store_->next_slot();
+        
+        // try enable stream here
+        if (p->try_finish_first_append()) {
+            p->enable_streaming();
+        }
 
     } else {
         std::lock_guard<std::mutex> guard(p->get_lock());
@@ -1157,12 +1142,16 @@ void raft_server::handle_append_entries_resp(resp_msg& resp) {
               "resp next %" PRIu64 ", new next log idx %" PRIu64,
               p->get_id(), prev_next_log,
               resp.get_next_idx(), p->get_next_log_idx() );
+
+        // release first append
+        p->try_finish_first_append();
     }
 
     // NOTE:
     //   If all other followers are not responding, we may not make
     //   below condition true. In that case, we check the timeout of
     //   re-election timer in heartbeat handler, and do force resign.
+    // todo: stream mode compatible
     ulong p_matched_idx = p->get_matched_idx();
     if ( write_paused_ &&
          p->get_id() == next_leader_candidate_ &&
@@ -1222,7 +1211,7 @@ void raft_server::handle_append_entries_resp(resp_msg& resp) {
         // which eats up CPU. Then the leader will send heartbeats only.
         need_to_catchup = false;
         // also need to disable streaming
-        p->disable_append();
+        p->disable_streaming();
     }
 
     // This may not be a leader anymore,
