@@ -150,6 +150,31 @@ asio_service::meta_cb_params req_to_params(req_msg* req, resp_msg* resp) {
 
 // === ASIO Abstraction ===
 //     (to switch SSL <-> unsecure on-the-fly)
+struct pending_req_pkg {
+public:
+    pending_req_pkg(ptr<req_msg>& _req, 
+                    rpc_handler& _when_done, 
+                    uint64_t _timeout_ms = 0)
+        : req(_req), when_done(_when_done), timeout_ms(_timeout_ms)
+        {}
+
+    ptr<req_msg> get_req() {
+        return req;
+    }
+
+    rpc_handler& get_when_done() {
+        return when_done;
+    }
+
+    uint64_t get_timeout_ms() {
+        return timeout_ms;
+    }
+private:
+    ptr<req_msg> req;
+    rpc_handler when_done;
+    uint64_t timeout_ms;
+};
+
 class aa {
 public:
     template<typename BB, typename FF>
@@ -1126,28 +1151,38 @@ public:
             when_done(rsp, except);
             return;
         }
-        send(req, when_done, send_timeout_ms);
-    }
-
-    bool make_write_busy() __override__ {
-        bool f = false;
-        return writing_flag_.compare_exchange_strong(f, true);
-    }
-
-    void free_write() __override__ {
-        writing_flag_.store(false);
-    }
-
-    bool has_flying_request() const __override__ {
-        // caller must get the socket write lock and is in read callback
-        // == 1 to check if only itself left
-        return flying_count > 1;
+        register_req_send(req, when_done, send_timeout_ms);
     }
 
     virtual void send(ptr<req_msg>& req,
                       rpc_handler& when_done,
                       uint64_t send_timeout_ms = 0) __override__
     {
+        if (impl_->get_options().enable_stream_) {
+            pre_send(req, when_done, send_timeout_ms);
+        } else {
+            register_req_send(req, when_done, send_timeout_ms);
+        }
+    }
+
+    void pre_send(ptr<req_msg>& req,
+                    rpc_handler& when_done,
+                    uint64_t send_timeout_ms) {
+        auto_lock(pending_write_reqs_lock_);
+        if (pending_write == 0) {
+            register_req_send(req, when_done, send_timeout_ms);
+        } else {
+            pending_write_reqs_.push_back(cs_new<pending_req_pkg>(req, when_done, send_timeout_ms));
+        }
+
+        pending_write++;
+        p_db("start to send msg to peer %d, start_log_idx: %ld, size: %ld, pending write reqs: %ld", 
+        req->get_dst(), req->get_last_log_idx(), req->log_entries().size(), pending_write);
+    }
+
+    void register_req_send(ptr<req_msg>& req,
+                      rpc_handler& when_done,
+                      uint64_t send_timeout_ms) {
         if (abandoned_) {
             p_er( "client %p to %s:%s is already stale (SSL %s)",
                   this, host_.c_str(), port_.c_str(),
@@ -1464,6 +1499,13 @@ private:
         } );
     }
 
+    void free_busy_flag(bool by_write) {
+        // Either satisfied or neither satisfied
+        if (impl_->get_options().enable_stream_ == by_write) {
+            set_busy_flag(false);
+        }
+    }
+
     void set_busy_flag(bool to) {
         if (to == true) {
             bool exp = false;
@@ -1483,6 +1525,10 @@ private:
     }
 
     void close_socket() {
+        // 1->clear all
+        // 2->the oldest write callback is already called, skip it
+        // 3->the oldest read callback is already called, skip it 
+
         // Do nothing,
         // early closing socket before destroying this instance
         // may cause problem, especially when SSL is enabled.
@@ -1498,6 +1544,42 @@ private:
             }
         }
 #endif
+        if (!impl_->get_options().enable_stream_) {
+            return;
+        }
+        // clear write queue and read queue here
+        // to keep the order, latest to oldest (is that ok?)
+        // handle write queue first in reverse
+        {
+            auto_lock(pending_write_reqs_lock_);
+            for (auto rit = pending_write_reqs_.rbegin(); rit != pending_write_reqs_.rend(); ++rit) {
+                ptr<pending_req_pkg> pkg = *rit;
+                ptr<resp_msg> rsp;
+                ptr<rpc_exception> except
+                    ( cs_new<rpc_exception>
+                        ( lstrfmt("socket to host %s closed")
+                            .fmt( host_.c_str()),
+                        pkg->get_req()));
+                pkg->get_when_done()(rsp, except);
+            }
+            pending_write_reqs_.clear();
+        }
+
+        // handle read queue in reverse
+        {
+            auto_lock(pending_read_reqs_lock_);
+            for (auto rit = pending_read_reqs_.rbegin(); rit != pending_read_reqs_.rend(); ++rit) {
+                ptr<pending_req_pkg> pkg = *rit;
+                ptr<resp_msg> rsp;
+                ptr<rpc_exception> except
+                    ( cs_new<rpc_exception>
+                        ( lstrfmt("socket to host %s closed")
+                            .fmt( host_.c_str()),
+                        pkg->get_req()));
+                pkg->get_when_done()(rsp, except);
+            }
+            pending_read_reqs_.clear();
+        }
     }
 
     void cancel_socket(const ERROR_CODE& err) {
@@ -1539,7 +1621,7 @@ private:
                                  std::placeholders::_1 ) );
 #endif
             } else {
-                this->send(req, when_done, send_timeout_ms);
+                this->register_req_send(req, when_done, send_timeout_ms);
             }
 
         } else {
@@ -1566,7 +1648,7 @@ private:
             p_in( "handshake with %s:%s succeeded (as a client)",
                   host_.c_str(), port_.c_str() );
             ssl_ready_ = true;
-            this->send(req, when_done, send_timeout_ms);
+            this->register_req_send(req, when_done, send_timeout_ms);
 
         } else {
             abandoned_ = true;
@@ -1596,7 +1678,11 @@ private:
         // Now we can safely free the `req_buf`.
         (void)buf;
         if (!err) {
-            post_send(req, when_done);
+            if (impl_->get_options().enable_stream_) {
+                post_send(req, when_done);
+            } else {
+                register_response_read(req, when_done);
+            }
         } else {
             operation_timer_.cancel();
             abandoned_ = true;
@@ -1696,6 +1782,7 @@ private:
                                  std::placeholders::_2 ) );
         } else {
             operation_timer_.cancel();
+            free_busy_flag(false);
             ptr<rpc_exception> except;
             when_done(rsp, except);
             post_read();
@@ -1719,6 +1806,7 @@ private:
             rsp->set_ctx(ctx_buf);
 
             operation_timer_.cancel();
+            free_busy_flag(false);
             ptr<rpc_exception> except;
             when_done(rsp, except);
             post_read();
@@ -1781,6 +1869,7 @@ private:
         }
 
         operation_timer_.cancel();
+        free_busy_flag(false);
         ptr<rpc_exception> except;
         when_done(rsp, except);
         post_read();
@@ -1828,32 +1917,56 @@ private:
     }
 
     void post_send(ptr<req_msg>& req, rpc_handler& when_done) {
-        auto_lock(pending_read_reqs_lock_);
-        // process pending request
-        if (pending_read_reqs_.empty()) {
-            register_response_read(req, when_done);
-        }
-        pending_read_reqs_.push_back(cs_new<pending_req_pkg>(req, when_done));
-        flying_count++;
-        p_db("msg to peer %d has been write down, start_log_idx: %ld, size: %ld, pending reqs: %ld", 
-        req->get_dst(), req->get_last_log_idx(), req->log_entries().size(), flying_count);
+        // first process read
+        {
+            auto_lock(pending_read_reqs_lock_);
+            // process pending request
+            if (pending_read == 0) {
+                register_response_read(req, when_done);
+            } else {
+                pending_read_reqs_.push_back(cs_new<pending_req_pkg>(req, when_done));
+            }
+            
+            pending_read++;
+            p_db("msg to peer %d has been write down, start_log_idx: %ld, size: %ld, pending read reqs: %ld", 
+            req->get_dst(), req->get_last_log_idx(), req->log_entries().size(), pending_read);
 
-        // release write lock
-        set_busy_flag(false);
-        free_write();
+            // release socket busy for stream mode
+            free_busy_flag(true);
+        }
+
+        // next process write
+        {
+            auto_lock(pending_write_reqs_lock_);
+            pending_write--;
+            if (!pending_write_reqs_.empty()) {
+                auto bi = pending_write_reqs_.begin();
+                ptr<pending_req_pkg> next_req_pkg = (*bi);
+                ptr<req_msg> next_req = next_req_pkg->get_req();
+                register_req_send(next_req, next_req_pkg->get_when_done(), next_req_pkg->get_timeout_ms());
+                pending_write_reqs_.pop_front();
+                p_db("trigger next write, start_log_idx: %ld, pending write reqs: %ld",
+                    next_req->get_last_log_idx(), pending_write);
+            }
+        }
     }
 
     void post_read() {
+        if (!impl_->get_options().enable_stream_) {
+            return;
+        }
+
         // trigger next read
         auto_lock(pending_read_reqs_lock_);    
-        pending_read_reqs_.pop_front();
-        flying_count--;
+        pending_read--;
         if (!pending_read_reqs_.empty()) {
             auto bi = pending_read_reqs_.begin();
             ptr<pending_req_pkg> next_req_pkg = (*bi);
             ptr<req_msg> next_req = next_req_pkg->get_req();
             register_response_read(next_req, next_req_pkg->get_when_done());
-            p_db("trigger next read, start_log_idx: %ld", next_req->get_last_log_idx());
+            pending_read_reqs_.pop_front();
+            p_db("trigger next read, start_log_idx: %ld, pending read reqs: %ld", 
+                next_req->get_last_log_idx(), pending_read);
         }
     }
 
@@ -1876,10 +1989,6 @@ private:
     uint64_t client_id_;
     asio::steady_timer operation_timer_;
     ptr<logger> l_;
-    /**
-     * `true` if we sent message to this server
-     */
-    std::atomic<bool> writing_flag_;
 
     /**
      * Queue of request which is pending for reading
@@ -1887,14 +1996,29 @@ private:
     std::list<ptr<pending_req_pkg>> pending_read_reqs_;
 
     /**
-     * Lock for pending_read_reqs_ queue.
+     * Lock for pending_read_reqs_queue.
      */
     std::mutex pending_read_reqs_lock_;
 
     /**
-     * Count of flying request
+     * Queue of request which is pending for writing
+     */
+    std::list<ptr<pending_req_pkg>> pending_write_reqs_;
+
+    /**
+     * Lock for pending_write_reqs_queue.
+     */
+    std::mutex pending_write_reqs_lock_;
+
+    /**
+     * Count of pending read
     */
-    uint64_t flying_count;
+    size_t pending_read;
+
+    /**
+     * Count of pending write
+    */
+    size_t pending_write;
 };
 
 } // namespace nuraft

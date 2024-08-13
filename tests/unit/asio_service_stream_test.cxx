@@ -89,29 +89,28 @@ namespace asio_service_stream_test {
             msg->put(test_msg);
 
             while(count > 0) {
-                if (my_client->make_write_busy()) {
-                    ptr<req_msg> req ( cs_new<req_msg>
-                    ( 1, msg_type::append_entries_request, 1, my_id,
-                    1, send_log_index, 1 ) );
+                ptr<req_msg> req ( cs_new<req_msg>
+                ( 1, msg_type::append_entries_request, 1, my_id,
+                1, send_log_index, 1 ) );
 
-                    ptr<log_entry> log( cs_new<log_entry>
-                    ( 0, msg, log_val_type::app_log ) );
-                    req->log_entries().push_back(log);
+                ptr<log_entry> log( cs_new<log_entry>
+                ( 0, msg, log_val_type::app_log ) );
+                req->log_entries().push_back(log);
 
-                    rpc_handler h = (rpc_handler)std::bind
-                        ( &stream_server::handle_result,
-                            this,
-                            req,
-                            std::placeholders::_1,
-                            std::placeholders::_2 );
-                    my_client->send(req, h);
-                    send_log_index++;
-                    count--;
-                }
+                rpc_handler h = (rpc_handler)std::bind
+                    ( &stream_server::handle_result,
+                        this,
+                        req,
+                        std::placeholders::_1,
+                        std::placeholders::_2 );
+                my_client->send(req, h);
+                send_log_index++;
+                count--;
             }
         }
 
         void handle_result(ptr<req_msg>& req, ptr<resp_msg>& resp, ptr<rpc_exception>& err) {
+            SimpleLogger* ll = my_log_wrapper->getLogger();
             if (resp->get_next_idx() == get_next_log_index()) {
                 response_log_index++;
             } else {
@@ -171,6 +170,7 @@ namespace asio_service_stream_test {
             asio_service::options asio_opt;
             asio_opt.thread_pool_size_  = 2;
             asio_opt.replicate_log_timestamp_ = false;
+            asio_opt.enable_stream_ = true;
             asio_svc = cs_new<asio_service>(asio_opt, my_log);
 
             // client

@@ -125,6 +125,7 @@ struct asio_service_options {
         , crc_on_entire_message_(false)
         , crc_on_payload_(false)
         , corrupted_msg_handler_(nullptr)
+        , enable_stream_()
         {}
 
     /**
@@ -276,6 +277,11 @@ struct asio_service_options {
      */
     std::function< void( std::shared_ptr<buffer>,
                          std::shared_ptr<buffer> ) > corrupted_msg_handler_;
+
+    /**
+     * If `true`, NuRaft will disable socket busy check for read.
+     */
+    bool enable_stream_;
 };
 
 }

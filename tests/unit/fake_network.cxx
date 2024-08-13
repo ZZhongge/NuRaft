@@ -328,18 +328,6 @@ bool FakeClient::is_abandoned() const {
     return false;
 }
 
-bool FakeClient::make_write_busy() {
-    return true;
-}
-
-bool FakeClient::has_flying_request() const {
-    return pendingReqs.size() == 1;
-}
-
-void FakeClient::free_write() {
-    return;
-}
-
 // === FakeTimer
 
 FakeTimer::FakeTimer(const std::string& endpoint,

@@ -32,25 +32,6 @@ namespace nuraft {
  * Declaring this to hide the dependency of asio.hpp
  * from root header file, which can boost the compilation time.
  */
-class pending_req_pkg {
-public:
-    pending_req_pkg(ptr<req_msg>& _req, rpc_handler& _when_done)
-        : req(_req), when_done(_when_done)
-        {}
-
-    ptr<req_msg> get_req() {
-        return req;
-    }
-
-    rpc_handler& get_when_done() {
-        return when_done;
-    }
-
-private:
-    ptr<req_msg> req;
-    rpc_handler when_done;
-};
-
 class asio_service_impl;
 class logger;
 class rpc_listener;
