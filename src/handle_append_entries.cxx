@@ -1116,8 +1116,18 @@ void raft_server::handle_append_entries_resp(resp_msg& resp) {
         // Try to commit with this response.
         ulong committed_index = get_expected_committed_log_idx();
         commit( committed_index );
+
+        ulong next_sent_log = 0;
+        {
+            std::lock_guard<std::mutex> guard(p->get_lock());
+            if (p->is_streaming() && ctx_->get_params()->enable_streaming_mode_) {
+                next_sent_log = p->get_last_streamed_log_idx() + 1;
+            } else {
+                next_sent_log = resp.get_next_idx();
+            }
+        }
         need_to_catchup = p->clear_pending_commit() ||
-                          resp.get_next_idx() < log_store_->next_slot();
+                          next_sent_log < log_store_->next_slot();
         
         // try enable stream here
         if (p->try_finish_first_append()) {
