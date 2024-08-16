@@ -32,6 +32,8 @@ __interface_body__(delayed_task_scheduler);
 public:
     virtual void schedule(ptr<delayed_task>& task, int32 milliseconds) = 0;
 
+    virtual void async_execute(std::function<void()> func) = 0;
+
     void cancel(ptr<delayed_task>& task) {
         cancel_impl(task);
         task->cancel();

@@ -150,6 +150,26 @@ asio_service::meta_cb_params req_to_params(req_msg* req, resp_msg* resp) {
 
 // === ASIO Abstraction ===
 //     (to switch SSL <-> unsecure on-the-fly)
+struct pending_resp_pkg {
+public:
+    pending_resp_pkg(ptr<req_msg>& _req, 
+                    ptr<resp_msg>& _resp)
+        : req(_req), resp(_resp)
+        {}
+
+    ptr<req_msg> get_req() {
+        return req;
+    }
+
+    ptr<resp_msg> get_resp() {
+        return resp;
+    }
+
+private:
+    ptr<req_msg> req;
+    ptr<resp_msg> resp;
+};
+
 class aa {
 public:
     template<typename BB, typename FF>
@@ -197,6 +217,7 @@ private:
 
 private:
     asio::io_service io_svc_;
+    asio::io_context::strand strand;
     ssl_context ssl_server_ctx_;
     ssl_context ssl_client_ctx_;
     asio::steady_timer asio_timer_;
@@ -708,7 +729,7 @@ private:
                 ( cmd_result<ptr<buffer>, ptr<std::exception>>& res,
                   ptr<std::exception>& exp ) {
                     resp->set_ctx(res.get());
-                    on_resp_ready(req, resp);
+                    pre_send(req, resp);
                     // This is needed to avoid circular reference.
                     res.reset();
                 }
@@ -720,8 +741,9 @@ private:
                 // If callback function exists, get new response message.
                 resp = resp->call_cb(resp);
             }
-            on_resp_ready(req, resp);
+            pre_send(req, resp);
         }
+        this->start(self);
 
        } catch (std::exception& ex) {
         p_er( "session %" PRIu64 " failed to process request message "
@@ -841,6 +863,146 @@ private:
        }
     }
 
+    void pre_send(ptr<req_msg> req, ptr<resp_msg> resp) {
+        auto_lock(pending_write_reqs_lock_);
+        if (pending_write == 0) {
+            register_response_send(req, resp);
+        } else {
+            pending_write_reqs_.push_back(cs_new<pending_resp_pkg>(req, resp));
+        }
+
+        pending_write++;
+        p_db("start to send resp to peer %d, start_log_idx: %ld, size: %ld, pending write reqs: %ld", 
+        resp->get_dst(), req->get_last_log_idx(), req->log_entries().size(), pending_write);
+    }
+
+    void post_send() {
+        // next process write
+        {
+            auto_lock(pending_write_reqs_lock_);
+            pending_write--;
+            if (!pending_write_reqs_.empty()) {
+                auto bi = pending_write_reqs_.begin();
+                ptr<pending_resp_pkg> next_req_pkg = (*bi);
+                ptr<req_msg> next_req = next_req_pkg->get_req();
+                register_response_send(next_req, next_req_pkg->get_resp());
+                pending_write_reqs_.pop_front();
+                p_db("trigger next resp write, start_log_idx: %ld, pending write reqs: %ld",
+                    next_req->get_last_log_idx(), pending_write);
+            }
+        }
+    }
+
+    void register_response_send(ptr<req_msg> req, ptr<resp_msg> resp) {
+        ptr<rpc_session> self = this->shared_from_this();
+
+       try {
+        ptr<buffer> resp_ctx = resp->get_ctx();
+        int32 resp_ctx_size = (resp_ctx) ? resp_ctx->size() : 0;
+        int32 result_code_size = sizeof(int32_t);
+
+        uint32_t flags = 0x0;
+        size_t resp_meta_size = 0;
+        std::string resp_meta_str;
+        if (impl_->get_options().write_resp_meta_) {
+            resp_meta_str = impl_->get_options().write_resp_meta_
+                            ( req_to_params(req.get(), resp.get()) );
+            if (!resp_meta_str.empty()) {
+                // Meta callback for response is given, set the flag.
+                flags |= INCLUDE_META;
+                resp_meta_size = sizeof(int32) + resp_meta_str.size();
+            }
+        }
+
+        size_t resp_hint_size = 0;
+        if (resp->get_next_batch_size_hint_in_bytes()) {
+            // Hint is given, set the flag.
+            flags |= INCLUDE_HINT;
+            // For future extension, we will put 2-byte version and 2-byte length.
+            resp_hint_size += sizeof(uint16_t) * 2 + sizeof(int64);
+        }
+
+        size_t carried_data_size = resp_meta_size + resp_hint_size + resp_ctx_size;
+
+        if (req->get_type() == msg_type::client_request ||
+            req->get_type() == msg_type::add_server_request ||
+            req->get_type() == msg_type::remove_server_request) {
+            flags |= INCLUDE_RESULT_CODE;
+            carried_data_size += result_code_size;
+        }
+
+        int buf_size = RPC_RESP_HEADER_SIZE + carried_data_size;
+        ptr<buffer> resp_buf = buffer::alloc(buf_size);
+        buffer_serializer bs(resp_buf);
+
+        const byte RESP_MARKER = 0x1;
+        bs.put_u8(RESP_MARKER);
+        bs.put_u8(resp->get_type());
+        bs.put_i32(resp->get_src());
+        bs.put_i32(resp->get_dst());
+        bs.put_u64(resp->get_term());
+        bs.put_u64(resp->get_next_idx());
+        bs.put_u8(resp->get_accepted());
+        bs.put_i32(carried_data_size);
+
+        // Calculate CRC32 on header only.
+        uint32_t crc_val = crc32_8( resp_buf->data_begin(),
+                                    RPC_RESP_HEADER_SIZE - CRC_FLAGS_LEN,
+                                    0 );
+
+        uint64_t flags_crc = ((uint64_t)flags << 32) | crc_val;
+        bs.put_u64(flags_crc);
+
+        // Handling meta if the flag is set.
+        if (flags & INCLUDE_META) {
+            bs.put_str(resp_meta_str);
+        }
+        // Put hint if the flag is set.
+        if (flags & INCLUDE_HINT) {
+            const uint16_t CUR_HINT_VERSION = 0;
+            bs.put_u16(CUR_HINT_VERSION);
+            bs.put_u16(sizeof(ulong));
+            bs.put_i64(resp->get_next_batch_size_hint_in_bytes());
+        }
+
+        if (resp_ctx_size) {
+            resp_ctx->pos(0);
+            bs.put_buffer(*resp_ctx);
+        }
+
+        /* Put result code at the end to avoid breaking backward compatibility */
+        if (flags & INCLUDE_RESULT_CODE) {
+            bs.put_i32(resp->get_result_code());
+        }
+
+        aa::write( ssl_enabled_, ssl_socket_, socket_,
+                   asio::buffer(resp_buf->data_begin(), resp_buf->size()),
+                   [this, self, resp_buf]
+                   (ERROR_CODE err_code, size_t) -> void
+        {
+            // To avoid releasing `resp_buf` before the write is done.
+            (void)resp_buf;
+            if (!err_code) {
+                // trigger next send
+                post_send();
+            } else {
+                p_er( "session %" PRIu64 " failed to send response to peer due "
+                      "to error %d",
+                      session_id_,
+                      err_code.value() );
+                this->stop();
+            }
+        } );
+
+       } catch (std::exception& ex) {
+        p_er( "session %" PRIu64 " failed to process request message "
+              "due to error: %s",
+              this->session_id_,
+              ex.what() );
+        this->stop();
+       }
+    }
+
 private:
     uint64_t session_id_;
     asio_service_impl* impl_;
@@ -880,6 +1042,18 @@ private:
      * CRC number from the request header.
      */
     uint32_t crc_from_msg_;
+
+    /**
+     * Queue of request which is pending for reading
+     */
+    std::list<ptr<pending_resp_pkg>> pending_write_reqs_;
+
+    /**
+     * Lock for pending_read_reqs_ queue.
+     */
+    std::mutex pending_write_reqs_lock_;
+
+    size_t pending_write;
 };
 
 // rpc listener implementation
@@ -1939,6 +2113,7 @@ ssl_context get_or_create_ssl_context(std::function<SSL_CTX* (void)> ctx_provide
 asio_service_impl::asio_service_impl(const asio_service::options& _opt,
                                      ptr<logger> l)
     : io_svc_()
+    , strand(io_svc_)
 #if (ASIO_VERSION >= 101601) && \
     (OPENSSL_VERSION_NUMBER >= 0x10100000L) && \
     !defined(LIBRESSL_VERSION_NUMBER)
@@ -2172,6 +2347,14 @@ void asio_service::schedule(ptr<delayed_task>& task, int32 milliseconds) {
     timer->async_wait( std::bind( &_timer_handler_,
                                   task,
                                   std::placeholders::_1 ) );
+}
+
+void asio_service::async_execute(std::function<void()> func) {
+    impl_->strand.post(func);
+}
+
+void asio_service::task() {
+    
 }
 
 void asio_service::cancel_impl(ptr<delayed_task>& task) {

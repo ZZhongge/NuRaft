@@ -893,6 +893,9 @@ protected:
     void apply_to_not_responding_peers(const std::function<void(const ptr<peer>&)>&, int expiry = 0);
 
     ptr<resp_msg> handle_append_entries(req_msg& req);
+    void async_wait_end(req_msg& req, size_t size);
+    void post_pre_commit(req_msg& req, ptr<resp_msg> resp);
+    void async_execute(ptr<req_msg>& req, size_t size, ptr<resp_msg>& resp, ptr<cmd_result< ptr<buffer> >>& async_result);
     ptr<resp_msg> handle_prevote_req(req_msg& req);
     ptr<resp_msg> handle_vote_req(req_msg& req);
     ptr<resp_msg> handle_cli_req_prelock(req_msg& req, const req_ext_params& ext_params);

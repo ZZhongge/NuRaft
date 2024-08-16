@@ -642,11 +642,7 @@ ptr<resp_msg> raft_server::handle_append_entries(req_msg& req)
     // To avoid election timer wakes up while we are in the middle
     // of this function, this structure sets the flag and automatically
     // clear it when we return from this function.
-    struct ServingReq {
-        ServingReq(std::atomic<bool>* _val) : val(_val) { val->store(true); }
-        ~ServingReq() { val->store(false); }
-        std::atomic<bool>* val;
-    } _s_req(&serving_req_);
+    serving_req_num_.fetch_add(1);
     timer_helper tt;
 
     p_tr("from peer %d, req type: %d, req term: %" PRIu64 ", "
@@ -912,31 +908,59 @@ ptr<resp_msg> raft_server::handle_append_entries(req_msg& req)
         p_in("end to append logs");
 
         // End of batch.
-        log_store_->end_of_append_batch( req.get_last_log_idx() + 1,
-                                         req.log_entries().size() );
-        p_in("end to flush the logs");
-
-        ptr<raft_params> params = ctx_->get_params();
-        if (params->parallel_log_appending_) {
-            uint64_t last_durable_index = log_store_->last_durable_index();
-            while ( last_durable_index <
-                    req.get_last_log_idx() + req.log_entries().size() ) {
-                // Some logs are not durable yet, wait here and block the thread.
-                p_tr( "durable index %" PRIu64
-                      ", sleep and wait for log appending completion",
-                      last_durable_index );
-                ea_follower_log_append_->wait_ms(params->heart_beat_interval_);
-
-                // --- `notify_log_append_completion` API will wake it up. ---
-
-                ea_follower_log_append_->reset();
-                last_durable_index = log_store_->last_durable_index();
-                p_tr( "wake up, durable index %" PRIu64, last_durable_index );
-            }
-        }
+        ptr<cmd_result< ptr<buffer> >> async_result = cs_new< cmd_result< ptr<buffer> > >();
+        resp->set_async_cb
+        ( std::bind( &raft_server::handle_cli_req_callback_async,
+                    this,
+                    async_result ) );
+        ptr<req_msg> cp_req = cs_new<req_msg>(req.get_term(), req.get_type(), 
+        req.get_src(), req.get_dst(), req.get_last_log_term(), req.get_last_log_idx(), req.get_commit_idx());
+        ctx_->scheduler_->async_execute(std::bind(&raft_server::async_execute, this, cp_req, 
+                        req.log_entries().size(), resp, async_result));
+        return resp;
     }
 
-    leader_ = req.get_src();
+    post_pre_commit(req, resp);
+    return resp;
+}
+
+void raft_server::async_execute(ptr<req_msg>& req, size_t size, ptr<resp_msg>& resp, 
+                ptr<cmd_result< ptr<buffer> >>& async_result) {
+    async_wait_end(*req, size);
+    post_pre_commit(*req, resp);
+    ptr<buffer> buffer;
+    ptr<std::exception> err;
+    async_result->set_result(buffer, err);
+}
+
+void raft_server::async_wait_end(req_msg& req, size_t size) {
+    // End of batch.
+    log_store_->end_of_append_batch( req.get_last_log_idx() + 1,
+                                        size );
+    p_in("end to flush the logs");
+
+    ptr<raft_params> params = ctx_->get_params();
+    if (params->parallel_log_appending_) {
+        uint64_t last_durable_index = log_store_->last_durable_index();
+        while ( last_durable_index <
+                req.get_last_log_idx() + size ) {
+            // Some logs are not durable yet, wait here and block the thread.
+            p_tr( "durable index %" PRIu64
+                    ", sleep and wait for log appending completion",
+                    last_durable_index );
+            ea_follower_log_append_->wait_ms(params->heart_beat_interval_);
+
+            // --- `notify_log_append_completion` API will wake it up. ---
+
+            ea_follower_log_append_->reset();
+            last_durable_index = log_store_->last_durable_index();
+            p_tr( "wake up, durable index %" PRIu64, last_durable_index );
+        }
+    }
+}
+
+void raft_server::post_pre_commit(req_msg& req, ptr<resp_msg> resp) {
+        leader_ = req.get_src();
 
     // WARNING:
     //   If this node was leader but now follower, and right after
@@ -983,20 +1007,20 @@ ptr<resp_msg> raft_server::handle_append_entries(req_msg& req)
     } else {
         commit( std::min( req.get_commit_idx(), target_precommit_index ) );
     }
-
+    
     resp->accept(target_precommit_index + 1);
 
-    int32 time_ms = tt.get_us() / 1000;
-    if (time_ms >= ctx_->get_params()->heart_beat_interval_) {
-        // Append entries took longer than HB interval. Warning.
-        p_wn("appending entries from peer %d took long time (%d ms)\n"
-             "req type: %d, req term: %" PRIu64 ", "
-             "req l idx: %" PRIu64 " (%zu), req c idx: %" PRIu64 ", "
-             "my term: %" PRIu64 ", my role: %d",
-             req.get_src(), time_ms, (int)req.get_type(), req.get_term(),
-             req.get_last_log_idx(), req.log_entries().size(), req.get_commit_idx(),
-             state_->get_term(), (int)role_);
-    }
+    // int32 time_ms = tt.get_us() / 1000;
+    // if (time_ms >= ctx_->get_params()->heart_beat_interval_) {
+    //     // Append entries took longer than HB interval. Warning.
+    //     p_wn("appending entries from peer %d took long time (%d ms)\n"
+    //          "req type: %d, req term: %" PRIu64 ", "
+    //          "req l idx: %" PRIu64 " (%zu), req c idx: %" PRIu64 ", "
+    //          "my term: %" PRIu64 ", my role: %d",
+    //          req.get_src(), time_ms, (int)req.get_type(), req.get_term(),
+    //          req.get_last_log_idx(), req.log_entries().size(), req.get_commit_idx(),
+    //          state_->get_term(), (int)role_);
+    // }
 
     // Modified by Jung-Sang Ahn, Mar 28 2018.
     // Restart election timer here, as this function may take long time.
@@ -1010,8 +1034,7 @@ ptr<resp_msg> raft_server::handle_append_entries(req_msg& req)
     p_tr("batch size hint: %" PRId64 " bytes", bs_hint);
 
     out_of_log_range_ = false;
-
-    return resp;
+    serving_req_num_.fetch_sub(1);
 }
 
 bool raft_server::try_update_precommit_index(ulong desired, const size_t MAX_ATTEMPTS) {

@@ -358,6 +358,10 @@ void FakeTimer::schedule(ptr<delayed_task>& task, int32 milliseconds) {
     tasks.push_back(task);
 }
 
+void FakeTimer::async_execute(std::function<void()> func) {
+    func();
+}
+
 void FakeTimer::cancel(ptr<delayed_task>& task) {
     cancel_impl(task);
 }

@@ -174,6 +174,8 @@ public:
 
     void schedule(ptr<delayed_task>& task, int32 milliseconds);
 
+    void async_execute(std::function<void()> func);
+
     void cancel(ptr<delayed_task>& task);
 
     void invoke(int type);

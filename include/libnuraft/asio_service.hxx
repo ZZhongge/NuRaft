@@ -73,8 +73,12 @@ public:
                           int32 milliseconds)
                  __override__;
 
+    virtual void async_execute(std::function<void()> func) __override__;
+
     virtual ptr<rpc_client> create_client(const std::string& endpoint)
                             __override__;
+
+    virtual void task();
 
     ptr<rpc_listener> create_rpc_listener(ushort listening_port,
                                           ptr<logger>& l);
